@@ -342,8 +342,22 @@ if [ -z "$CONFIG_ROOT" ]; then
   CONFIG_ROOT="$REPO_ROOT"
 fi
 
+# FORK DIVERGENCE — `.tracker_repo` is scoped to the ops fork's OWN commits.
+#
+# Upstream applies the ops fork's `.tracker_repo` to every repo the hook fires
+# in. That is fine when one tracker governs the whole portfolio, but this fork
+# is heterogeneous: framework work is tracked on GitHub (the private portfolio
+# repo) while every MANAGED project is tracked in Azure DevOps. Applied
+# globally, a `Closes #123` committed inside workspace/<project>/ would be
+# checked against the FRAMEWORK's tracker, come back "missing", and block a
+# perfectly valid commit.
+#
+# So: honour `.tracker_repo` only when the commit's own repo IS the ops fork.
+# Anything else falls through to the origin remote below (and, once the
+# per-project registry tracker lands, to that).
 TRACKER_REPO=""
-if [ -n "$CONFIG_ROOT" ] && [ -f "${CONFIG_ROOT}/.claude/project-config.json" ]; then
+if [ -n "$CONFIG_ROOT" ] && [ -f "${CONFIG_ROOT}/.claude/project-config.json" ] && \
+   [ -n "$REPO_ROOT" ] && [ "$REPO_ROOT" = "$CONFIG_ROOT" ]; then
   TRACKER_REPO=$(jq -r '.tracker_repo // empty' "${CONFIG_ROOT}/.claude/project-config.json" 2>/dev/null)
 fi
 if [ -z "$TRACKER_REPO" ]; then

@@ -299,10 +299,16 @@ if [ -n "$TICKET_REF" ]; then
   # when the operator is inside workspace/<project>/ — the project clone's git
   # root is NOT where the framework config lives. Resolved up front so the kind
   # lookup below can key off the target repo for a per-project override (#670).
+  # FORK DIVERGENCE — `.tracker_repo` is scoped to the ops fork's OWN PRs.
+  # Same reasoning as verify-commit-refs.sh: this portfolio is tracker-
+  # heterogeneous (framework work on GitHub, managed projects on Azure DevOps),
+  # so the ops fork's tracker must not be applied to a managed project's PR.
+  # An explicit --repo on the command still wins, as upstream intends.
   TRACKER_REPO=""
   if [ -n "$CMD_REPO" ]; then
     TRACKER_REPO="$CMD_REPO"
-  elif [ -n "$CONFIG_ROOT" ] && [ -f "${CONFIG_ROOT}/.claude/project-config.json" ]; then
+  elif [ -n "$CONFIG_ROOT" ] && [ -f "${CONFIG_ROOT}/.claude/project-config.json" ] && \
+       [ -n "$REPO_ROOT" ] && [ "$REPO_ROOT" = "$CONFIG_ROOT" ]; then
     TRACKER_REPO=$(jq -r '.tracker_repo // empty' "${CONFIG_ROOT}/.claude/project-config.json" 2>/dev/null)
   fi
   if [ -z "$TRACKER_REPO" ]; then

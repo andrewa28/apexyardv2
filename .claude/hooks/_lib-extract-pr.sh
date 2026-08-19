@@ -22,11 +22,31 @@
 # Any tool that edits one of the three merge hooks MUST keep calling this
 # helper, not re-implement the parsing inline. That's the whole point.
 #
-# USAGE
-# -----
+# FORK ADDITION — Azure DevOps (see the section at the bottom of this file)
+# --------------------------------------------------------------------------
+# This fork governs Azure DevOps projects, so two more shapes are recognised:
+#
+#   5. `az repos pr update --id 42 --status completed`            → PR is 42
+#   6. mcp__azure-devops__repo_update_pull_request (status=completed) → PR is 42
+#
+# Shape 6 carries no command string, so it is invisible to the command-string
+# API below. Prefer the whole-input API for any new gate code.
+#
+# USAGE — command-string API (shapes 1–5; unchanged, upstream-compatible)
+# -----------------------------------------------------------------------
 #   . "$(dirname "$0")/_lib-extract-pr.sh"
 #   if ! is_merge_command "$COMMAND"; then exit 0; fi
 #   PR_NUMBER=$(extract_pr_number "$COMMAND")
+#
+# USAGE — whole-input API (covers shape 6 too; preferred for new code)
+# ---------------------------------------------------------------------
+#   . "$(dirname "$0")/_lib-extract-pr.sh"
+#   if ! is_merge_invocation "$INPUT"; then exit 0; fi
+#   PR_NUMBER=$(extract_pr_number_from_invocation "$INPUT")
+#   PR_HEAD=$(resolve_pr_head_from_invocation "$INPUT" "$PR_NUMBER" "$CMD_REPO")
+#
+# `merge_stack_from_invocation "$INPUT"` echoes "forge" (gh/glab/wrapper),
+# "azuredevops", or "" (not a merge invocation).
 #
 # FORGE-AWARENESS (#764)
 # ----------------------
@@ -901,4 +921,164 @@ extract_repo_from_command() {
   fi
 
   echo "$repo"
+}
+
+# -----------------------------------------------------------------------------
+# Azure DevOps / MCP merge-shape support (fork divergence — see
+# docs/upstream-sync-playbook.md; originally andrewa28/apexyard#3)
+# -----------------------------------------------------------------------------
+# Upstream recognises gh and glab merge shapes only. Every project in this
+# portfolio is governed in Azure DevOps, whose merge shapes are:
+#
+#   5. `az repos pr update --id 42 --status completed`            → PR is 42
+#   6. mcp__azure-devops__repo_update_pull_request with           → PR is 42
+#      tool_input.pullRequestId=42, tool_input.status="completed"
+#
+# Shape 6 carries NO command string, so the command-string API above cannot see
+# it at all. The functions below therefore take the WHOLE hook input JSON — the
+# same string the hook receives on stdin. The command-string functions are left
+# untouched for backwards compatibility with upstream's tests.
+#
+# RE-GRAFT NOTE (v4.3.0 → v5.4.0): the original returned the literal "github"
+# for the non-AzDO branch. Upstream has since added GitLab support, so
+# `is_merge_command` now matches glab and `tracker_pr_merge` shapes too, and
+# `resolve_pr_head` is forge-aware. The token is therefore "forge" — meaning
+# "whatever forge upstream's own helpers handle" — not "github".
+
+# Returns 0 if $1 is an Azure DevOps PR-completion Bash command.
+# Matches `az repos pr update ... --status completed` with `--id <n>` somewhere.
+is_az_merge_command() {
+  local cmd="$1"
+  echo "$cmd" | grep -qE '\baz\s+repos\s+pr\s+update\b' || return 1
+  echo "$cmd" | grep -qE -- '--status[[:space:]]+completed\b' || return 1
+  return 0
+}
+
+# Echoes the PR number from an `az repos pr update --id <n>` command, or empty.
+extract_az_pr_number() {
+  local cmd="$1"
+  echo "$cmd" | grep -oE -- '--id[[:space:]]+[0-9]+' | grep -oE '[0-9]+' | head -1
+}
+
+# Internal: echo the effective tool name for an invocation.
+#
+# Fails CLOSED: an input carrying a `.tool_input.command` but no `.tool_name`
+# (older harnesses, and several upstream test fixtures) is treated as Bash, so
+# a forge merge shape is still gated rather than silently allowed.
+_invocation_tool_name() {
+  local input="$1" tool_name
+  tool_name=$(echo "$input" | jq -r '.tool_name // empty' 2>/dev/null)
+  if [ -z "$tool_name" ] && \
+     [ -n "$(echo "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)" ]; then
+    tool_name="Bash"
+  fi
+  echo "$tool_name"
+}
+
+# Echoes one of: "forge" | "azuredevops" | "" (not a merge invocation).
+merge_stack_from_invocation() {
+  local input="$1" tool_name
+  tool_name=$(_invocation_tool_name "$input")
+
+  case "$tool_name" in
+    mcp__azure-devops__repo_update_pull_request)
+      local status
+      status=$(echo "$input" | jq -r '.tool_input.status // empty' 2>/dev/null)
+      if [ "$status" = "completed" ]; then
+        echo "azuredevops"
+        return
+      fi
+      ;;
+    Bash)
+      local cmd
+      cmd=$(echo "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+      if is_merge_command "$cmd"; then
+        echo "forge"
+        return
+      fi
+      if is_az_merge_command "$cmd"; then
+        echo "azuredevops"
+        return
+      fi
+      ;;
+  esac
+  echo ""
+}
+
+# Returns 0 if $1 (whole input JSON) is any supported merge invocation.
+is_merge_invocation() {
+  [ -n "$(merge_stack_from_invocation "$1")" ]
+}
+
+# Echoes the PR number from any supported merge invocation, or empty.
+extract_pr_number_from_invocation() {
+  local input="$1" tool_name
+  tool_name=$(_invocation_tool_name "$input")
+
+  case "$tool_name" in
+    mcp__azure-devops__repo_update_pull_request)
+      # Gate on status=completed so a non-merge MCP update (e.g. retitling a
+      # PR) yields empty — matching the Bash branch, where a non-merge command
+      # also yields empty. Without this, a caller that forgot to check
+      # is_merge_invocation first would see a plausible PR number for an
+      # invocation that is not a merge at all.
+      if [ "$(echo "$input" | jq -r '.tool_input.status // empty' 2>/dev/null)" = "completed" ]; then
+        echo "$input" | jq -r '.tool_input.pullRequestId // empty' 2>/dev/null
+      fi
+      return
+      ;;
+    Bash)
+      local cmd
+      cmd=$(echo "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
+      if is_merge_command "$cmd"; then
+        extract_pr_number "$cmd"
+        return
+      fi
+      if is_az_merge_command "$cmd"; then
+        extract_az_pr_number "$cmd"
+        return
+      fi
+      ;;
+  esac
+  echo ""
+}
+
+# Echoes the PR's HEAD SHA via the appropriate CLI (gh / glab / az), or empty.
+#
+# Azure DevOps has no `headRefOid`; the equivalent is the PR resource's
+# `lastMergeSourceCommit.commitId`, resolved via `az repos pr show`. The MCP
+# tool `repo_get_pull_request_by_id` returns the same field, but MCP tools are
+# not callable from bash, so we shell out to `az`.
+#
+# If `az` is missing or unauthenticated this returns empty and warns; the caller
+# falls back to local HEAD with a visible warning — the same contract as the
+# forge path in resolve_pr_head.
+resolve_pr_head_from_invocation() {
+  local input="$1"
+  local pr_number="$2"
+  local cmd_repo="$3"
+  local stack
+  stack=$(merge_stack_from_invocation "$input")
+
+  if [ -z "$pr_number" ]; then
+    echo ""
+    return
+  fi
+
+  case "$stack" in
+    forge)
+      resolve_pr_head "$pr_number" "$cmd_repo"
+      ;;
+    azuredevops)
+      if ! command -v az >/dev/null 2>&1; then
+        echo "WARN: az CLI not found — cannot resolve Azure DevOps PR #${pr_number} HEAD. Install az and run 'az login' to enable the mechanical SHA check." >&2
+        echo ""
+        return
+      fi
+      az repos pr show --id "$pr_number" --query 'lastMergeSourceCommit.commitId' -o tsv 2>/dev/null
+      ;;
+    *)
+      echo ""
+      ;;
+  esac
 }
