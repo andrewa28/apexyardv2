@@ -79,9 +79,10 @@ workspace/*/
 # specific name to .git/info/exclude on each clone.
 
 # -----------------------------------------------------------------------------
-# Split-portfolio v2 — portfolio data lives in the PRIVATE sibling repo
-# (../apexyardv2-portfolio), resolved via .claude/project-config.json →
-# `portfolio`. None of it may be tracked in this PUBLIC fork.
+# Split-portfolio v2 — portfolio data lives in a PRIVATE sibling repo, whose
+# path is configured in .claude/project-config.json → `portfolio` (itself
+# gitignored, so the sibling is never named in a tracked file).
+# None of that data may be tracked in this PUBLIC fork.
 # -----------------------------------------------------------------------------
 # Anchored with a leading slash so these match ONLY at the fork root. Bare
 # `projects` also matched the tracked framework skill dir
@@ -95,7 +96,7 @@ workspace/*/
 # public fork per AgDR-0021 § G. Under v2 the actual clones live in the private
 # sibling repo, so upstream's existing rule is sufficient and correct.
 
-# Rex learned data — symlinks into ../apexyardv2-portfolio/rex/. Names people,
+# Rex learned data — symlinks into the private portfolio repo's rex/ dir. Names people,
 # repos, and internal review patterns; never trackable here.
 .claude/rex-checklist-index.json
 .claude/rex-checklist-tier2.md
@@ -107,22 +108,11 @@ workspace/*/
 .DS_Store
 .claude/tmp/
 
-# Custom-skill symlinks created by link-custom-skills.sh at SessionStart. They
-# point into ../apexyardv2-portfolio/custom-skills/; the names and targets are
-# private, so they must never be tracked here. Re-created on every session start.
-#
-# ENUMERATED BY NAME ON PURPOSE — and this list must be kept in step. A glob
-# cannot work: these sit among ~70 tracked framework skill dirs in the same
-# parent, so any pattern broad enough to catch them would also ignore framework
-# skills. ADDING A 9TH CUSTOM SKILL REQUIRES ADDING A LINE HERE, or its name
-# becomes stageable in this public repo. Residual risk is low — the
-# block-git-add-all.sh hook refuses `git add .` / `-A`, so it would take a
-# deliberate explicit `git add .claude/skills/<name>` to actually stage one.
-.claude/skills/domain-modeling
-.claude/skills/grill-with-docs
-.claude/skills/grilling
-.claude/skills/learn-from-pr
-.claude/skills/learn-from-pr-2
-.claude/skills/mission-accepted
-.claude/skills/rex-precheck
-.claude/skills/sprint-readiness
+# Custom-skill symlinks created by link-custom-skills.sh at SessionStart are
+# deliberately NOT listed here — see the note above. A glob can't target them
+# without also catching framework skills, and enumerating them by name would
+# write the adopter's private skill names into a TRACKED file in a PUBLIC repo,
+# publishing the very thing the split-portfolio layout exists to keep private.
+# The names go in per-clone `.git/info/exclude` instead (never committed);
+# `bin/link-rex-data.sh`'s sibling, `link-custom-skills.sh`, recreates the
+# symlinks each session regardless.

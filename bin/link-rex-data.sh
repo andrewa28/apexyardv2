@@ -12,7 +12,7 @@
 # before running this.
 #
 # TARGETS ARE ABSOLUTE, DELIBERATELY. `portfolio.registry` is stored relative to
-# the FORK ROOT (e.g. "../apexyardv2-portfolio/apexyard.projects.yaml"), but a
+# the FORK ROOT (e.g. "../<private-portfolio>/apexyard.projects.yaml"), but a
 # relative symlink target resolves against the LINK's own directory — here
 # `.claude/`, one level down. Using the config string verbatim produced five
 # dangling links that `readlink` still matched, so the idempotence check happily
@@ -53,7 +53,16 @@ for f in rex-checklist-index.json rex-checklist-tier2.md rex-checklist-CONTRIBUT
   link=".claude/$f"
 
   if [ ! -e "$target" ]; then
-    echo "skip  $f (not present in $rex_dir)"
+    # If a link to the now-missing target is still sitting here, clear it.
+    # Leaving it would exit 0 with a dangling link in place — no "ok" is
+    # printed, so the never-report-success-over-a-broken-link property holds,
+    # but rc=0 would still imply a consistency that isn't there.
+    if [ -L "$link" ]; then
+      rm -f "$link"
+      echo "prune $f (target gone from $rex_dir; removed stale link)"
+    else
+      echo "skip  $f (not present in $rex_dir)"
+    fi
     continue
   fi
 
