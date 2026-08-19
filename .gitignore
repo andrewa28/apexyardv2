@@ -77,3 +77,36 @@ workspace/*/
 # `git status` shows them as untracked symlinks — leave them alone.
 # If you absolutely want to suppress the untracked-symlink line, add the
 # specific name to .git/info/exclude on each clone.
+
+# -----------------------------------------------------------------------------
+# Split-portfolio v2 — portfolio data lives in the PRIVATE sibling repo
+# (../apexyardv2-portfolio), resolved via .claude/project-config.json →
+# `portfolio`. None of it may be tracked in this PUBLIC fork.
+# -----------------------------------------------------------------------------
+apexyard.projects.yaml
+projects
+workspace
+
+# Rex learned data — symlinks into ../apexyardv2-portfolio/rex/. Names people,
+# repos, and internal review patterns; never trackable here.
+.claude/rex-checklist-index.json
+.claude/rex-checklist-tier2.md
+.claude/rex-checklist-CONTRIBUTING.md
+.claude/rex-review-journal.md
+.claude/pr-docs-index.json
+
+# macOS + per-machine scratch
+.DS_Store
+.claude/tmp/
+
+# Custom-skill symlinks created by link-custom-skills.sh at SessionStart. They
+# point into ../apexyardv2-portfolio/custom-skills/; the names and targets are
+# private, so they must never be tracked here. Re-created on every session start.
+.claude/skills/domain-modeling
+.claude/skills/grill-with-docs
+.claude/skills/grilling
+.claude/skills/learn-from-pr
+.claude/skills/learn-from-pr-2
+.claude/skills/mission-accepted
+.claude/skills/rex-precheck
+.claude/skills/sprint-readiness
