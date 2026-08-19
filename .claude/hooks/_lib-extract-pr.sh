@@ -741,6 +741,42 @@ resolve_ci_status_glab() {
 #      branch's PR
 #
 # Returns empty if the repo cannot be determined.
+# Echo the `--repo` / `-R` value belonging to the MERGE COMMAND ITSELF, or empty.
+#
+# WHY THIS IS A SHARED FUNCTION (andrewa28/apexyardv2-portfolio#7)
+# ----------------------------------------------------------------
+# Three merge gates each carried their own copy of this parse, and all three
+# copies were the naive greedy form:
+#
+#   sed -nE 's/.*--repo[[:space:]]+([^[:space:]]+).*/\1/p'
+#
+# `.*--repo` matches the LAST `--repo` reachable by a greedy prefix, anywhere in
+# the command text — including inside a heredoc body, a quoted doc excerpt, or an
+# unrelated earlier subcommand. Those gates use the result to choose WHICH
+# APPROVAL MARKER FILE TO READ, so text that is not the merge command could
+# redirect the gate's lookup key. Observed live twice: a reviewer writing a review
+# body that quoted documentation containing an older repo slug.
+#
+# Both failures mattered, in opposite directions:
+#   - pointed at a marker that does not exist -> blocks a legitimate merge
+#   - pointed at a marker that DOES exist with a matching SHA -> the gate is
+#     satisfied by an unrelated approval. That is fail-OPEN, and it needs no
+#     forgery, only naming a different file.
+#
+# The fix is fencing, not a better regex: find the merge command's own span
+# (bounded at the first shell separator) and search only inside it. A `--repo`
+# outside that span belongs to some other command and is none of our business.
+# `extract_repo_from_command` already did this correctly; the gates' private
+# copies shadowed it. One implementation now, used by all callers.
+extract_repo_flag_in_merge_span() {
+  local cmd="$1" mspan
+  # Fence at the first shell separator so a later `&& grep -R foo` (or an
+  # earlier unrelated flag) cannot leak in.
+  mspan=$(echo "$cmd" | grep -oE '\b(gh\s+pr|glab\s+mr)\s+merge\b[^|;&]*')
+  [ -z "$mspan" ] && return 0
+  echo "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1
+}
+
 extract_repo_from_command() {
   local cmd="$1"
   local repo=""
@@ -769,9 +805,7 @@ extract_repo_from_command() {
   #    trailing unrelated `-R` in a compound command — e.g. `... && grep -R foo` —
   #    cannot be mistaken for the merge target's repo.
   if [ -z "$repo" ]; then
-    local mspan
-    mspan=$(echo "$cmd" | grep -oE '\b(gh\s+pr|glab\s+mr)\s+merge\b[^|;&]*')
-    repo=$(echo "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1)
+    repo=$(extract_repo_flag_in_merge_span "$cmd")
   fi
 
   # 2b. tracker_pr_merge wrapper positional arg (#759): `<owner/repo>` is the
