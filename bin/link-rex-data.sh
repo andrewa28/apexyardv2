@@ -92,3 +92,42 @@ if [ "$failed" -ne 0 ]; then
   echo "ERROR: one or more links do not resolve — see above." >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Keep .git/info/exclude in step with the private custom-skills/ directory.
+#
+# link-custom-skills.sh creates a symlink at .claude/skills/<name>/ for each
+# private skill on every SessionStart. Those names must not be written to a
+# TRACKED file in this PUBLIC repo (that would publish exactly what the
+# split-portfolio layout protects), and a glob can't target them either —
+# they sit among ~70 tracked framework skill dirs in the same parent. So the
+# names go in .git/info/exclude, which is per-clone and never committed.
+#
+# Per-clone means a FRESH CLONE starts with none of them, and the symlinks come
+# back untracked and stageable at the next SessionStart. Generating the list
+# here — from the private dir, at runtime — closes that window without naming
+# anything in the repo, and removes the "adding a 9th skill needs a new line"
+# footgun: the list regenerates itself.
+# ---------------------------------------------------------------------------
+skills_dir="$(dirname "$rex_dir")/custom-skills"
+exclude_file=".git/info/exclude"
+
+if [ -d "$skills_dir" ]; then
+  mkdir -p "$(dirname "$exclude_file")"
+  [ -f "$exclude_file" ] || : > "$exclude_file"
+
+  added=0
+  for skill_path in "$skills_dir"/*/; do
+    [ -d "$skill_path" ] || continue                      # no match → literal glob
+    name=$(basename "$skill_path")
+    [ -f "$skill_path/SKILL.md" ] || continue             # only real skills
+    entry=".claude/skills/$name"
+    grep -qxF "$entry" "$exclude_file" || { printf '%s\n' "$entry" >> "$exclude_file"; added=$((added + 1)); }
+  done
+
+  if [ "$added" -gt 0 ]; then
+    echo "excl  added $added custom-skill entr$([ "$added" -eq 1 ] && echo y || echo ies) to $exclude_file"
+  else
+    echo "excl  $exclude_file already covers every custom skill"
+  fi
+fi
