@@ -83,9 +83,17 @@ workspace/*/
 # (../apexyardv2-portfolio), resolved via .claude/project-config.json →
 # `portfolio`. None of it may be tracked in this PUBLIC fork.
 # -----------------------------------------------------------------------------
-apexyard.projects.yaml
-projects
-workspace
+# Anchored with a leading slash so these match ONLY at the fork root. Bare
+# `projects` also matched the tracked framework skill dir
+# `.claude/skills/projects/` — harmless today (gitignore does not affect
+# already-tracked files) but wrong, and a trap for anything added there later.
+/apexyard.projects.yaml
+/projects/
+# NOTE: `workspace/` is NOT blanket-ignored here. Upstream already ignores
+# `workspace/*/` (the clones) while keeping `workspace/README.md` tracked — a
+# framework artefact that explains the convention and deliberately stays in the
+# public fork per AgDR-0021 § G. Under v2 the actual clones live in the private
+# sibling repo, so upstream's existing rule is sufficient and correct.
 
 # Rex learned data — symlinks into ../apexyardv2-portfolio/rex/. Names people,
 # repos, and internal review patterns; never trackable here.
@@ -102,6 +110,14 @@ workspace
 # Custom-skill symlinks created by link-custom-skills.sh at SessionStart. They
 # point into ../apexyardv2-portfolio/custom-skills/; the names and targets are
 # private, so they must never be tracked here. Re-created on every session start.
+#
+# ENUMERATED BY NAME ON PURPOSE — and this list must be kept in step. A glob
+# cannot work: these sit among ~70 tracked framework skill dirs in the same
+# parent, so any pattern broad enough to catch them would also ignore framework
+# skills. ADDING A 9TH CUSTOM SKILL REQUIRES ADDING A LINE HERE, or its name
+# becomes stageable in this public repo. Residual risk is low — the
+# block-git-add-all.sh hook refuses `git add .` / `-A`, so it would take a
+# deliberate explicit `git add .claude/skills/<name>` to actually stage one.
 .claude/skills/domain-modeling
 .claude/skills/grill-with-docs
 .claude/skills/grilling
