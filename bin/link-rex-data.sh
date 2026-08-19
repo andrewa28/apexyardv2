@@ -34,8 +34,17 @@ if [ ! -f .claude/project-config.json ]; then
   exit 1
 fi
 
-read -r rex_dir skills_dir <<EOF
-$(python3 - <<'PY'
+# Captured with $( ) and an explicit `|| exit 1`, NOT `read … <<EOF`.
+#   - `read` splits on IFS, so a single space anywhere in the fork or portfolio
+#     path truncated BOTH variables and the script then reported "no
+#     custom-skills dir … skipped" — a benign-looking no-op that silently left
+#     every private symlink stageable. Paths with spaces are ordinary on macOS
+#     ("My Drive", "Mobile Documents").
+#   - a command substitution inside a heredoc discards its exit status, so
+#     `set -e` could not see python failing; a malformed config printed the
+#     right error and then carried on with empty values.
+# One value per line, split on newline only.
+_paths=$(python3 - <<'PY'
 import json, os, sys
 try:
     cfg = json.load(open('.claude/project-config.json'))
@@ -52,10 +61,17 @@ base = os.path.dirname(reg)
 # all-clear if an adopter ever points it elsewhere.
 skills = portfolio.get('custom_skills_dir') or os.path.join(base, 'custom-skills')
 # Absolute, so targets are correct no matter which directory a link sits in.
-print(os.path.abspath(os.path.join(base, 'rex')), os.path.abspath(skills))
+print(os.path.abspath(os.path.join(base, 'rex')))
+print(os.path.abspath(skills))
 PY
-)
-EOF
+) || exit 1
+
+rex_dir=$(printf '%s\n' "$_paths" | sed -n '1p')
+skills_dir=$(printf '%s\n' "$_paths" | sed -n '2p')
+[ -n "$rex_dir" ] && [ -n "$skills_dir" ] || {
+  echo "ERROR: could not resolve portfolio paths from .claude/project-config.json" >&2
+  exit 1
+}
 
 # ---------------------------------------------------------------------------
 # Keep .git/info/exclude in step with the private custom-skills/ directory.
