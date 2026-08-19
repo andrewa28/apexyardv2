@@ -198,7 +198,17 @@ if command -v jq >/dev/null 2>&1; then
   COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 fi
 
-if [ -z "$COMMAND" ]; then
+# --- Azure DevOps MCP merge shape (fork divergence) ---------------------
+# `mcp__azure-devops__repo_update_pull_request` with status=completed IS a
+# merge and carries NO command string, so the empty-COMMAND branch below would
+# exit 0 and this gate would never fire on it. Detect it before that branch.
+# Narrow by design: only a genuine AzDO merge invocation continues.
+_AZDO_MCP_MERGE=0
+if [ -z "$COMMAND" ] && [ "$(merge_stack_from_invocation "$INPUT")" = "azuredevops" ]; then
+  _AZDO_MCP_MERGE=1
+fi
+
+if [ -z "$COMMAND" ] && [ "$_AZDO_MCP_MERGE" -eq 0 ]; then
   # jq is missing, OR jq is present but the parse produced nothing — a
   # genuinely empty command (legitimate no-op) or jq choking on
   # malformed/unexpected JSON. Those two cases are indistinguishable from
@@ -230,7 +240,27 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-if ! is_merge_command "$COMMAND"; then
+# Whole-input gate (fork divergence): the gh / glab / wrapper shapes exactly as
+# is_merge_command handled them, plus `az repos pr update --status completed`
+# and the AzDO MCP shape. is_merge_invocation delegates to is_merge_command for
+# everything upstream already covered, so no existing shape changes behaviour.
+if ! is_merge_invocation "$INPUT"; then
+  exit 0
+fi
+
+# --- Azure DevOps: this gate does not apply (fork divergence) ------------
+# Azure DevOps enforces red-CI blocking server-side through Build Validation
+# branch policies — the platform refuses the completion itself. Replicating
+# that here would mean reimplementing policy evaluation via
+# `az pipelines runs list` + policy lookup, duplicating work the platform
+# already does and doing it less reliably.
+#
+# Exit 0, but SAY SO. A gate that silently does nothing is indistinguishable
+# from a gate that passed, and that ambiguity is what the rest of this ticket
+# has been about.
+if [ "$(merge_stack_from_invocation "$INPUT")" = "azuredevops" ]; then
+  _AZ_PR=$(extract_pr_number_from_invocation "$INPUT")
+  echo "NOTE: block-merge-on-red-ci does not apply to Azure DevOps PR #${_AZ_PR:-?} — red CI is gated server-side by Build Validation branch policies, not by this hook." >&2
   exit 0
 fi
 
@@ -266,7 +296,10 @@ if [ -n "$CMD_REPO" ]; then
   REPO_FLAG="--repo $CMD_REPO"
 fi
 
-PR_NUMBER=$(extract_pr_number "$COMMAND")
+# Invocation-aware (fork divergence): identical to extract_pr_number for every
+# command shape, and additionally reads .tool_input.pullRequestId for the AzDO
+# MCP shape, which has no command text to parse.
+PR_NUMBER=$(extract_pr_number_from_invocation "$INPUT")
 
 if [ -z "$PR_NUMBER" ]; then
   # Another hook will handle "no PR number" — skip
