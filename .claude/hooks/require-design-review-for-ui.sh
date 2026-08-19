@@ -131,7 +131,10 @@ fi
 #                        not the PR's repo. me2resh/apexyard#687, the merge-time
 #                        sibling of the create-time fix #669.)
 #   4. extract_repo_from_command fallback (current-branch `gh pr view`)
-CMD_REPO=$(echo "$COMMAND" | sed -nE 's/.*--repo[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)
+# Fenced to the merge command's own span — a `--repo` elsewhere in the command
+# text (heredoc body, quoted docs, unrelated subcommand) must not choose which
+# approval marker this gate reads. See extract_repo_flag_in_merge_span.
+CMD_REPO=$(extract_repo_flag_in_merge_span "$COMMAND")
 if [ -z "$CMD_REPO" ]; then
   CMD_REPO=$(echo "$COMMAND" | grep -oE 'repos/[^/[:space:]]+/[^/[:space:]]+/pulls/[0-9]+/merge' | sed -nE 's|repos/([^/]+/[^/]+)/pulls/.*|\1|p' | head -1)
 fi

@@ -139,7 +139,10 @@ fi
 # Parse --repo (for `gh pr merge --repo owner/repo`). The API-shape encodes
 # the repo in its URL path so we don't need the flag there — downstream
 # `gh pr view` / `gh pr checks` calls still benefit when the flag was passed.
-CMD_REPO=$(echo "$COMMAND" | sed -nE 's/.*--repo[[:space:]]+([^[:space:]]+).*/\1/p' | head -1)
+# Fenced to the merge command's own span — a `--repo` elsewhere in the command
+# text (heredoc body, quoted docs, unrelated subcommand) must not choose which
+# approval marker this gate reads. See extract_repo_flag_in_merge_span.
+CMD_REPO=$(extract_repo_flag_in_merge_span "$COMMAND")
 # If the command uses the API shape, recover owner/repo from the URL path
 # so other gh calls below can still be scoped correctly.
 if [ -z "$CMD_REPO" ]; then

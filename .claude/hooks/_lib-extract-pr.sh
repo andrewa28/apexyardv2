@@ -724,6 +724,82 @@ resolve_ci_status_glab() {
   esac
 }
 
+# Echo the `--repo` / `-R` value belonging to the MERGE COMMAND ITSELF, or empty.
+#
+# WHY THIS IS A SHARED FUNCTION (andrewa28/apexyardv2-portfolio#7)
+# ----------------------------------------------------------------
+# Three merge gates each carried their own copy of this parse, and all three
+# copies were the naive greedy form:
+#
+#   sed -nE 's/.*--repo[[:space:]]+([^[:space:]]+).*/\1/p'
+#
+# `.*--repo` matches the LAST `--repo` reachable by a greedy prefix, anywhere in
+# the command text — including inside a heredoc body, a quoted doc excerpt, or an
+# unrelated earlier subcommand. Those gates use the result to choose WHICH
+# APPROVAL MARKER FILE TO READ, so text that is not the merge command could
+# redirect the gate's lookup key. Observed live twice: a reviewer writing a review
+# body that quoted documentation containing an older repo slug.
+#
+# Both failures mattered, in opposite directions:
+#   - pointed at a marker that does not exist -> blocks a legitimate merge
+#   - pointed at a marker that DOES exist with a matching SHA -> the gate is
+#     satisfied by an unrelated approval. That is fail-OPEN, and it needs no
+#     forgery, only naming a different file.
+#
+# The fix is fencing, not a better regex: find the merge command's own span
+# (bounded at the first shell separator) and search only inside it. A `--repo`
+# outside that span belongs to some other command and is none of our business.
+# `extract_repo_from_command` already did this correctly; the gates' private
+# copies shadowed it. One implementation now, used by all callers.
+extract_repo_flag_in_merge_span() {
+  local cmd="$1" mspan nspans val
+  # Fence at the first shell separator so a later `&& grep -R foo` (or an
+  # earlier unrelated flag) cannot leak in.
+  mspan=$(echo "$cmd" | grep -oE '\b(gh\s+pr|glab\s+mr)\s+merge\b[^|;&]*')
+  [ -z "$mspan" ] && return 0
+
+  # AMBIGUITY -> FAIL CLOSED. `grep -oE` matches per LINE, so a quoted document
+  # line that is itself merge-command-shaped produces a second span, and taking
+  # the first would let quoted text win over the real command. That is not
+  # hypothetical: 17 files in this repo contain a merge command with a concrete
+  # `--repo <slug>` (docs/release-process.md among them), so quoting one in a
+  # review body or commit message reproduces it. Two spans can also yield an
+  # INCOHERENT key — a PR number from one and a repo from the other.
+  #
+  # There is no safe way to pick. Return empty and let the caller fall through
+  # to forge-derived resolution, which cannot be steered by command text.
+  #
+  # "FAIL CLOSED" IS ACCURATE FOR ONE CALLER OF THREE — do not over-read it.
+  # In block-unreviewed-merge.sh an empty repo yields `${CMD_REPO:-unknown}`,
+  # a marker miss, and a block. In require-design-review-for-ui.sh and
+  # require-architecture-review.sh it yields REPO_FLAG="" and therefore an
+  # UNSCOPED `gh pr diff` — ambient resolution (the #887 class), which under
+  # split-portfolio resolves the ops fork and can land on their `exit 0` skip.
+  # That is still strictly better than the alternative it replaced, where
+  # quoted text chose a real unrelated repo whose diff SUCCEEDED and skipped
+  # both gates deterministically. But the residual risk lives in those gates'
+  # exit-0-on-unresolvable behaviour, not here.
+  nspans=$(printf '%s\n' "$mspan" | grep -c .)
+  [ "$nspans" -gt 1 ] && return 0
+
+  # Both the space-separated and `=` forms — `gh` accepts `--repo=owner/repo`,
+  # and the space-only pattern silently returned empty for it, falling through
+  # to a different resolution path. That produced the worst possible outcome:
+  # approval verified against one repo while the merge executes on another.
+  # The value must not itself look like a flag: `--repo= --squash` would
+  # otherwise capture `--squash` and hand it on as a repo slug. gh rejects the
+  # empty value anyway, but in the design/architecture gates a nonsense repo
+  # makes `gh pr diff` fail and lands on their `exit 0` skip — so a parse slip
+  # here is a silent gate skip, not a visible error.
+  val=$(printf '%s\n' "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]=]+([^-[:space:]][^[:space:]]*).*/\2/p' | head -1)
+
+  # Strip one layer of surrounding quotes — `--repo "owner/repo"` otherwise
+  # carries them into the marker filename.
+  val=${val#\"}; val=${val%\"}
+  val=${val#\'}; val=${val%\'}
+  printf '%s\n' "$val"
+}
+
 # Echoes the owner/repo extracted from the merge command, or empty if not found.
 #
 # This is a SIBLING function to extract_pr_number — same parsing approach,
@@ -741,6 +817,7 @@ resolve_ci_status_glab() {
 #      branch's PR
 #
 # Returns empty if the repo cannot be determined.
+
 extract_repo_from_command() {
   local cmd="$1"
   local repo=""
@@ -769,9 +846,7 @@ extract_repo_from_command() {
   #    trailing unrelated `-R` in a compound command — e.g. `... && grep -R foo` —
   #    cannot be mistaken for the merge target's repo.
   if [ -z "$repo" ]; then
-    local mspan
-    mspan=$(echo "$cmd" | grep -oE '\b(gh\s+pr|glab\s+mr)\s+merge\b[^|;&]*')
-    repo=$(echo "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1)
+    repo=$(extract_repo_flag_in_merge_span "$cmd")
   fi
 
   # 2b. tracker_pr_merge wrapper positional arg (#759): `<owner/repo>` is the
@@ -779,9 +854,17 @@ extract_repo_from_command() {
   #     Same fencing-at-`)` discipline as extract_pr_number's wrapper step
   #     (the real call site is a `$(...)` command substitution).
   if [ -z "$repo" ]; then
-    local wspan wargs
+    local wspan wargs wspans
     wspan=$(echo "$cmd" | grep -oE '\btracker_pr_merge\b[^|;&)]*')
-    if [ -n "$wspan" ]; then
+    # Same ambiguity rule as extract_repo_flag_in_merge_span, and it matters MORE
+    # here: this is the path the sanctioned /approve-merge flow actually takes.
+    # `grep -oE` matches per line, so any quoted text naming the wrapper adds a
+    # span and first-match-wins would let prose choose the key. Demonstrated
+    # live twice — a review body, and a read-only `grep` whose own pattern
+    # contained the token. More than one span -> fail closed to forge-derived
+    # resolution.
+    wspans=$(printf '%s\n' "$wspan" | grep -c .)
+    if [ -n "$wspan" ] && [ "$wspans" -eq 1 ]; then
       wargs=$(echo "$wspan" | sed -E 's/^tracker_pr_merge[[:space:]]+//')
       repo=$(_extract_wrapper_arg "$wargs" 1)
     fi
