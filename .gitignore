@@ -77,3 +77,42 @@ workspace/*/
 # `git status` shows them as untracked symlinks — leave them alone.
 # If you absolutely want to suppress the untracked-symlink line, add the
 # specific name to .git/info/exclude on each clone.
+
+# -----------------------------------------------------------------------------
+# Split-portfolio v2 — portfolio data lives in a PRIVATE sibling repo, whose
+# path is configured in .claude/project-config.json → `portfolio` (itself
+# gitignored, so the sibling is never named in a tracked file).
+# None of that data may be tracked in this PUBLIC fork.
+# -----------------------------------------------------------------------------
+# Anchored with a leading slash so these match ONLY at the fork root. Bare
+# `projects` also matched the tracked framework skill dir
+# `.claude/skills/projects/` — harmless today (gitignore does not affect
+# already-tracked files) but wrong, and a trap for anything added there later.
+/apexyard.projects.yaml
+/projects/
+# NOTE: `workspace/` is NOT blanket-ignored here. Upstream already ignores
+# `workspace/*/` (the clones) while keeping `workspace/README.md` tracked — a
+# framework artefact that explains the convention and deliberately stays in the
+# public fork per AgDR-0021 § G. Under v2 the actual clones live in the private
+# sibling repo, so upstream's existing rule is sufficient and correct.
+
+# Rex learned data — symlinks into the private portfolio repo's rex/ dir. Names people,
+# repos, and internal review patterns; never trackable here.
+.claude/rex-checklist-index.json
+.claude/rex-checklist-tier2.md
+.claude/rex-checklist-CONTRIBUTING.md
+.claude/rex-review-journal.md
+.claude/pr-docs-index.json
+
+# macOS + per-machine scratch
+.DS_Store
+.claude/tmp/
+
+# Custom-skill symlinks created by link-custom-skills.sh at SessionStart are
+# deliberately NOT listed here — see the note above. A glob can't target them
+# without also catching framework skills, and enumerating them by name would
+# write the adopter's private skill names into a TRACKED file in a PUBLIC repo,
+# publishing the very thing the split-portfolio layout exists to keep private.
+# The names go in per-clone `.git/info/exclude` instead (never committed);
+# `bin/link-rex-data.sh`'s sibling, `link-custom-skills.sh`, recreates the
+# symlinks each session regardless.
