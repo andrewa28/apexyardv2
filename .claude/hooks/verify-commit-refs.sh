@@ -385,6 +385,43 @@ if [ "$TRACKER_KIND" = "none" ]; then
   exit 0
 fi
 
+# --- Azure DevOps dispatch (fork divergence, AgDR-0123) --------------------
+# Same reasoning as validate-pr-create.sh, with one deliberate difference:
+# a CLOSED work item only WARNS here. A commit legitimately references the work
+# item it just completed, and blocking that would make the last commit of every
+# task impossible to write.
+if [ -f "$HOOK_DIR/_lib-resolve-ticket.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$HOOK_DIR/_lib-resolve-ticket.sh"
+  _AZDO_SPEC=$(resolve_tracker_spec 2>/dev/null)
+  case "$_AZDO_SPEC" in
+    azuredevops:*)
+      _AZDO_MISSING=""
+      _AZDO_UNKNOWN=""
+      for REF in $REFS; do
+        _NUM=$(echo "$REF" | tr -d '#')
+        case "$(ticket_state "$_NUM" "$_AZDO_SPEC")" in
+          missing) _AZDO_MISSING="$_AZDO_MISSING $REF" ;;
+          unknown) _AZDO_UNKNOWN=1 ;;
+        esac
+      done
+      if [ -n "$_AZDO_MISSING" ]; then
+        {
+          echo "BLOCKED: commit message references work item(s)${_AZDO_MISSING} that do not exist in ${_AZDO_SPEC}."
+          echo
+          echo "Tracker notation refers to real work items only. If these are plan"
+          echo "steps rather than tickets, describe them in prose instead — see"
+          echo ".claude/rules/ticket-vocabulary.md."
+        } >&2
+        exit 2
+      fi
+      [ -n "$_AZDO_UNKNOWN" ] && echo "WARN: verify-commit-refs.sh: cannot reach Azure DevOps — references accepted on shape only against ${_AZDO_SPEC}." >&2
+      # Handled here; do not also run the tracker-lib path below.
+      exit 0
+      ;;
+  esac
+fi
+
 # `tracker.kind = gh` (default) still requires an origin / configured repo;
 # preserve today's behaviour. For non-gh kinds the {owner_repo} placeholder
 # in the configured view_command may be unused, so we don't gate on it.

@@ -404,6 +404,49 @@ if [ -n "$TICKET_REF" ]; then
     fi
   fi
 
+  # --- Azure DevOps dispatch (fork divergence, AgDR-0123) ----------------
+  # When `.tracker.azuredevops` / `.tracker_azuredevops` is configured, resolve
+  # #N as a Boards work item rather than a tracker-lib ticket. Runs BEFORE the
+  # tracker-lib path and consumes the ticket (TICKET_NUM="") when it applies.
+  #
+  # Why not upstream's `custom` tracker kind: it cannot distinguish "work item
+  # does not exist" from "az is unavailable", and the non-gh path degrades to
+  # shape-only (#501). Both collapse to "accepted", so a fabricated number
+  # passes. See AgDR-0123.
+  if [ -n "$TICKET_NUM" ] && [ -f "$_VPC_HOOK_DIR/_lib-resolve-ticket.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$_VPC_HOOK_DIR/_lib-resolve-ticket.sh"
+    _AZDO_SPEC=$(resolve_tracker_spec 2>/dev/null)
+    case "$_AZDO_SPEC" in
+      azuredevops:*)
+        case "$(ticket_state "$TICKET_NUM" "$_AZDO_SPEC")" in
+          missing)
+            {
+              echo "BLOCKED: PR title references ${TICKET_REF}, but work item #${TICKET_NUM} does not exist in ${_AZDO_SPEC}."
+              echo
+              echo "This is the fabricated-reference case the ticket-vocabulary rule exists to catch."
+              echo "If the work has no ticket yet, create one and use the number it returns."
+            } >&2
+            exit 2
+            ;;
+          closed)
+            {
+              echo "BLOCKED: PR title references ${TICKET_REF}, but work item #${TICKET_NUM} in ${_AZDO_SPEC} is closed."
+              echo "Reference an open work item, or reopen that one."
+            } >&2
+            exit 2
+            ;;
+          unknown)
+            echo "WARN: validate-pr-create.sh: cannot reach Azure DevOps — ${TICKET_REF} accepted on shape only, no existence check against ${_AZDO_SPEC}. Install/authenticate the az CLI to restore it." >&2
+            ;;
+        esac
+        # Handled here (verified, or explicitly warned) — do not also run the
+        # tracker-lib path, which would look this number up in the wrong system.
+        TICKET_NUM=""
+        ;;
+    esac
+  fi
+
   if [ -n "$TICKET_NUM" ] && { [ "$TRACKER_KIND" != "gh" ] || [ -n "$TRACKER_REPO" ]; }; then
     # Dispatch via the tracker lib. For non-gh kinds the {owner_repo}
     # placeholder is supplied but the template may not reference it.
