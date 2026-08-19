@@ -84,7 +84,20 @@ if command -v jq >/dev/null 2>&1; then
   COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 fi
 
-if [ -z "$COMMAND" ]; then
+# --- Azure DevOps MCP merge shape (fork divergence) ---------------------
+# `mcp__azure-devops__repo_update_pull_request` with status=completed IS a
+# merge, and it carries NO command string at all — so the empty-COMMAND
+# branch below would exit 0 and the gate would never fire on it. Detect it
+# here, before that branch, and let it fall through to the gate proper.
+#
+# Deliberately narrow: only a genuine AzDO merge invocation continues. Every
+# other command-less payload still takes the unchanged path below.
+_AZDO_MCP_MERGE=0
+if [ -z "$COMMAND" ] && [ "$(merge_stack_from_invocation "$INPUT")" = "azuredevops" ]; then
+  _AZDO_MCP_MERGE=1
+fi
+
+if [ -z "$COMMAND" ] && [ "$_AZDO_MCP_MERGE" -eq 0 ]; then
   # jq is missing, OR jq is present but the parse produced nothing — a
   # genuinely empty command (legitimate no-op) or jq choking on
   # malformed/unexpected JSON. Those two cases are indistinguishable from
@@ -116,7 +129,12 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-if ! is_merge_command "$COMMAND"; then
+# Whole-input gate (fork divergence): covers the gh / glab / tracker_pr_merge
+# shapes exactly as `is_merge_command` did, PLUS `az repos pr update --status
+# completed` and the AzDO MCP shape. `is_merge_invocation` delegates to
+# `is_merge_command` for everything upstream already handled, so no previously
+# gated shape changes behaviour.
+if ! is_merge_invocation "$INPUT"; then
   exit 0
 fi
 
@@ -149,7 +167,10 @@ if [ -z "$CMD_REPO" ]; then
   CMD_REPO=$(echo "$COMMAND" | grep -oE 'repos/[^/[:space:]]+/[^/[:space:]]+/pulls/[0-9]+/merge' | sed -nE 's|repos/([^/]+/[^/]+)/pulls/.*|\1|p' | head -1)
 fi
 
-PR_NUMBER=$(extract_pr_number "$COMMAND")
+# Invocation-aware (fork divergence): identical to extract_pr_number for every
+# command shape, and additionally reads .tool_input.pullRequestId for the AzDO
+# MCP shape, which has no command text to parse.
+PR_NUMBER=$(extract_pr_number_from_invocation "$INPUT")
 # Also extract the repo so markers are scoped to (repo, pr) — #485.
 # CMD_REPO already parsed above; resolve via helper if blank (e.g. current-branch fallback).
 # NOTE (#765): approval markers are keyed on the PR's BASE repo. CMD_REPO is the base
@@ -232,7 +253,11 @@ CEO_APPROVAL=$(review_marker_path "${CMD_REPO:-unknown}" "$PR_NUMBER" ceo "$MARK
 # If the forge call fails we BLOCK (#1091). Falling back to the local HEAD
 # would compare markers against an agent-controlled value, which is exactly
 # the property this gate exists to deny.
-CURRENT_SHA=$(resolve_pr_head "$PR_NUMBER" "$CMD_REPO")
+# Stack-aware HEAD resolution (fork divergence): gh/glab via resolve_pr_head as
+# before; Azure DevOps via `az repos pr show` -> lastMergeSourceCommit.commitId,
+# the AzDO equivalent of headRefOid. Same silent-empty-on-failure contract, so
+# the existing local-HEAD fallback below still applies.
+CURRENT_SHA=$(resolve_pr_head_from_invocation "$INPUT" "$PR_NUMBER" "$CMD_REPO")
 if [ -z "$CURRENT_SHA" ]; then
   cat >&2 <<MSG
 BLOCKED: could not resolve PR #${PR_NUMBER}'s HEAD from the forge.
