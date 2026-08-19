@@ -86,6 +86,35 @@ check "resolved key is NOT the mentioned repo's marker path" \
            "$(basename "$(review_marker_path "$OTHER" "$TEST_PR" ceo "$OPS_ROOT")")" ] && echo same || echo different)" \
       "different"
 
+echo "== ambiguity fails closed, and the = form is handled =="
+
+# THE case the first version of this test missed: a quoted line that is itself
+# merge-command-shaped. `grep -oE` matches per line, so this creates a second
+# span; taking the first would let quoted documentation choose the key. 17 files
+# in this repo contain exactly such a line.
+cmd_two_spans="cat > doc.md <<EOF
+Release step: $GH $PRW $MG 9 --repo $OTHER --squash
+EOF
+$GH $PRW $MG $TEST_PR --repo $VICTIM --squash"
+check "two merge spans -> empty (fail closed, not first-wins)" \
+      "$(extract_repo_flag_in_merge_span "$cmd_two_spans")" ""
+# sed is line-based, so `head -1` takes the first MATCHING LINE — the quoted
+# documentation line — not the real merge further down. Exactly the observed bug.
+check "  ...naive form picks the QUOTED doc line, not the real merge" \
+      "$(naive "$cmd_two_spans")" "$OTHER"
+
+# `gh` accepts --repo=owner/repo. The space-only pattern returned empty, which
+# fell through to a different resolution path — approval verified against one
+# repo while the merge runs on another.
+check "--repo=owner/repo (equals form) resolves" \
+      "$(extract_repo_flag_in_merge_span "$GH $PRW $MG $TEST_PR --repo=$VICTIM --squash")" "$VICTIM"
+check "-R=owner/repo (short equals form) resolves" \
+      "$(extract_repo_flag_in_merge_span "$GH $PRW $MG $TEST_PR -R=$VICTIM --squash")" "$VICTIM"
+
+# Quotes must not survive into the marker filename.
+check "quoted --repo value is unquoted" \
+      "$(extract_repo_flag_in_merge_span "$GH $PRW $MG $TEST_PR --repo \"$VICTIM\" --squash")" "$VICTIM"
+
 echo
 echo "  passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

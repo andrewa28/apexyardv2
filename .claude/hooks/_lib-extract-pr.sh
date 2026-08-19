@@ -769,12 +769,36 @@ resolve_ci_status_glab() {
 # `extract_repo_from_command` already did this correctly; the gates' private
 # copies shadowed it. One implementation now, used by all callers.
 extract_repo_flag_in_merge_span() {
-  local cmd="$1" mspan
+  local cmd="$1" mspan nspans val
   # Fence at the first shell separator so a later `&& grep -R foo` (or an
   # earlier unrelated flag) cannot leak in.
   mspan=$(echo "$cmd" | grep -oE '\b(gh\s+pr|glab\s+mr)\s+merge\b[^|;&]*')
   [ -z "$mspan" ] && return 0
-  echo "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]]+([^[:space:]]+).*/\2/p' | head -1
+
+  # AMBIGUITY -> FAIL CLOSED. `grep -oE` matches per LINE, so a quoted document
+  # line that is itself merge-command-shaped produces a second span, and taking
+  # the first would let quoted text win over the real command. That is not
+  # hypothetical: 17 files in this repo contain a merge command with a concrete
+  # `--repo <slug>` (docs/release-process.md among them), so quoting one in a
+  # review body or commit message reproduces it. Two spans can also yield an
+  # INCOHERENT key — a PR number from one and a repo from the other.
+  #
+  # There is no safe way to pick. Return empty and let the caller fall through
+  # to forge-derived resolution, which cannot be steered by command text.
+  nspans=$(printf '%s\n' "$mspan" | grep -c .)
+  [ "$nspans" -gt 1 ] && return 0
+
+  # Both the space-separated and `=` forms — `gh` accepts `--repo=owner/repo`,
+  # and the space-only pattern silently returned empty for it, falling through
+  # to a different resolution path. That produced the worst possible outcome:
+  # approval verified against one repo while the merge executes on another.
+  val=$(printf '%s\n' "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]=]+([^[:space:]]+).*/\2/p' | head -1)
+
+  # Strip one layer of surrounding quotes — `--repo "owner/repo"` otherwise
+  # carries them into the marker filename.
+  val=${val#\"}; val=${val%\"}
+  val=${val#\'}; val=${val%\'}
+  printf '%s\n' "$val"
 }
 
 extract_repo_from_command() {
@@ -813,9 +837,17 @@ extract_repo_from_command() {
   #     Same fencing-at-`)` discipline as extract_pr_number's wrapper step
   #     (the real call site is a `$(...)` command substitution).
   if [ -z "$repo" ]; then
-    local wspan wargs
+    local wspan wargs wspans
     wspan=$(echo "$cmd" | grep -oE '\btracker_pr_merge\b[^|;&)]*')
-    if [ -n "$wspan" ]; then
+    # Same ambiguity rule as extract_repo_flag_in_merge_span, and it matters MORE
+    # here: this is the path the sanctioned /approve-merge flow actually takes.
+    # `grep -oE` matches per line, so any quoted text naming the wrapper adds a
+    # span and first-match-wins would let prose choose the key. Demonstrated
+    # live twice — a review body, and a read-only `grep` whose own pattern
+    # contained the token. More than one span -> fail closed to forge-derived
+    # resolution.
+    wspans=$(printf '%s\n' "$wspan" | grep -c .)
+    if [ -n "$wspan" ] && [ "$wspans" -eq 1 ]; then
       wargs=$(echo "$wspan" | sed -E 's/^tracker_pr_merge[[:space:]]+//')
       repo=$(_extract_wrapper_arg "$wargs" 1)
     fi
