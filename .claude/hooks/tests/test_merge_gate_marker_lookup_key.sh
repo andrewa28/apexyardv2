@@ -115,6 +115,9 @@ check "-R=owner/repo (short equals form) resolves" \
 check "quoted --repo value is unquoted" \
       "$(extract_repo_flag_in_merge_span "$GH $PRW $MG $TEST_PR --repo \"$VICTIM\" --squash")" "$VICTIM"
 
+check "--repo= with no value does not capture the next flag" \
+      "$(extract_repo_flag_in_merge_span "$GH $PRW $MG $TEST_PR --repo= --squash")" ""
+
 echo
 echo "  passed=$pass failed=$fail"
 [ "$fail" -eq 0 ]

@@ -724,23 +724,6 @@ resolve_ci_status_glab() {
   esac
 }
 
-# Echoes the owner/repo extracted from the merge command, or empty if not found.
-#
-# This is a SIBLING function to extract_pr_number — same parsing approach,
-# repo-extraction only. Kept separate so the existing extract_pr_number
-# contract is not disturbed (it is used widely; callers that don't need the
-# repo are unaffected).
-#
-# Recognises:
-#   1. `gh api repos/<owner>/<repo>/pulls/<N>/merge ...`  — repo from URL path
-#   1b. `glab api projects/<owner>%2F<repo>/merge_requests/<N>/merge ...` — repo
-#       from the URL-encoded project path (#767)
-#   2. `gh pr merge ... --repo <owner>/<repo> ...`        — repo from --repo flag
-#   3. Falls back to `gh pr view --json headRepository`, scoped to the
-#      checkout's own `origin` remote when resolvable (#887) — current
-#      branch's PR
-#
-# Returns empty if the repo cannot be determined.
 # Echo the `--repo` / `-R` value belonging to the MERGE COMMAND ITSELF, or empty.
 #
 # WHY THIS IS A SHARED FUNCTION (andrewa28/apexyardv2-portfolio#7)
@@ -785,6 +768,17 @@ extract_repo_flag_in_merge_span() {
   #
   # There is no safe way to pick. Return empty and let the caller fall through
   # to forge-derived resolution, which cannot be steered by command text.
+  #
+  # "FAIL CLOSED" IS ACCURATE FOR ONE CALLER OF THREE — do not over-read it.
+  # In block-unreviewed-merge.sh an empty repo yields `${CMD_REPO:-unknown}`,
+  # a marker miss, and a block. In require-design-review-for-ui.sh and
+  # require-architecture-review.sh it yields REPO_FLAG="" and therefore an
+  # UNSCOPED `gh pr diff` — ambient resolution (the #887 class), which under
+  # split-portfolio resolves the ops fork and can land on their `exit 0` skip.
+  # That is still strictly better than the alternative it replaced, where
+  # quoted text chose a real unrelated repo whose diff SUCCEEDED and skipped
+  # both gates deterministically. But the residual risk lives in those gates'
+  # exit-0-on-unresolvable behaviour, not here.
   nspans=$(printf '%s\n' "$mspan" | grep -c .)
   [ "$nspans" -gt 1 ] && return 0
 
@@ -792,7 +786,12 @@ extract_repo_flag_in_merge_span() {
   # and the space-only pattern silently returned empty for it, falling through
   # to a different resolution path. That produced the worst possible outcome:
   # approval verified against one repo while the merge executes on another.
-  val=$(printf '%s\n' "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]=]+([^[:space:]]+).*/\2/p' | head -1)
+  # The value must not itself look like a flag: `--repo= --squash` would
+  # otherwise capture `--squash` and hand it on as a repo slug. gh rejects the
+  # empty value anyway, but in the design/architecture gates a nonsense repo
+  # makes `gh pr diff` fail and lands on their `exit 0` skip — so a parse slip
+  # here is a silent gate skip, not a visible error.
+  val=$(printf '%s\n' "$mspan" | sed -nE 's/.*(--repo|-R)[[:space:]=]+([^-[:space:]][^[:space:]]*).*/\2/p' | head -1)
 
   # Strip one layer of surrounding quotes — `--repo "owner/repo"` otherwise
   # carries them into the marker filename.
@@ -800,6 +799,24 @@ extract_repo_flag_in_merge_span() {
   val=${val#\'}; val=${val%\'}
   printf '%s\n' "$val"
 }
+
+# Echoes the owner/repo extracted from the merge command, or empty if not found.
+#
+# This is a SIBLING function to extract_pr_number — same parsing approach,
+# repo-extraction only. Kept separate so the existing extract_pr_number
+# contract is not disturbed (it is used widely; callers that don't need the
+# repo are unaffected).
+#
+# Recognises:
+#   1. `gh api repos/<owner>/<repo>/pulls/<N>/merge ...`  — repo from URL path
+#   1b. `glab api projects/<owner>%2F<repo>/merge_requests/<N>/merge ...` — repo
+#       from the URL-encoded project path (#767)
+#   2. `gh pr merge ... --repo <owner>/<repo> ...`        — repo from --repo flag
+#   3. Falls back to `gh pr view --json headRepository`, scoped to the
+#      checkout's own `origin` remote when resolvable (#887) — current
+#      branch's PR
+#
+# Returns empty if the repo cannot be determined.
 
 extract_repo_from_command() {
   local cmd="$1"
