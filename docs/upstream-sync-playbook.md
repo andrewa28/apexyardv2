@@ -104,7 +104,7 @@ What's left after that is the genuine overlap set — hand-merge per § 4.
 |---|---|---|
 | **Fork-owned** | `onboarding.yaml`, `apexyard.projects.yaml`, `projects/**`, `.gitignore` fork entries, CLAUDE.md fork sections | **Local wins.** Graft upstream structure only where useful. |
 | **Policy-divergent framework files** | merge gate, approve-merge/design skills, code-reviewer agent (§ 5) | **Upstream's new structure + re-graft our policy.** Do NOT keep-ours wholesale: sibling hooks/skills evolve together upstream (e.g. marker paths), and keep-ours breaks cross-file consistency. |
-| **AzDO-customized hooks** | `_lib-extract-pr.sh`, gate hooks, `validate-pr-create.sh`, `verify-commit-refs.sh`, `settings.json` | Upstream base + re-insert the AzDO dispatch blocks (they are marked with `andrewa28/apexyard#3` comments — grep for them). |
+| **AzDO-customized hooks** | `_lib-extract-pr.sh`, gate hooks, `validate-pr-create.sh`, `verify-commit-refs.sh`, `settings.json` | **Not applicable on `main` yet — see § 5b.8.** None of these carry AzDO dispatch today, so there is nothing to re-insert and nothing to grep for. Once the re-graft lands, the blocks are comment-marked; grep for `Azure DevOps` in `.claude/hooks/`. Until then, treat this row as a forward-looking note, not an instruction. |
 | **Docs with AzDO appendices** | rules/*.md, workflows/*.md | Union: our appendix + upstream's additions/footer. |
 | **Untouched by us** | everything else | Upstream wins. |
 
@@ -158,12 +158,31 @@ they are listed at the bottom so nobody helpfully re-adds them.
      skills that existed the day it was written.
 
      ```bash
-     _cs=$(dirname "$(jq -r '.portfolio.registry' .claude/project-config.json)")/custom-skills
-     _names=$(ls "$_cs" 2>/dev/null | grep -v '^README' | paste -sd'|' -)
-     if [ -z "$_names" ]; then echo "SKIP (no private custom-skills dir)"
-     elif git grep -qE "$_names" -- $(git ls-files); then echo VIOLATED
-     else echo ok; fi
+     # Anchor on the fork root via the git COMMON dir, so this works from a
+     # subdirectory and from inside a linked worktree (`isolated-builds.md`
+     # prescribes worktrees, so "only correct at the fork root" means "wrong
+     # exactly where you work"). `portfolio.registry` is fork-root-relative.
+     _root=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
+     _cfg="$_root/.claude/project-config.json"
+     if [ ! -f "$_cfg" ]; then
+       echo "CANNOT VERIFY — no project-config.json (untracked by design, AgDR-0122). Restore it and re-run."
+     else
+       _cs=$(cd "$_root" && cd "$(dirname "$(jq -r '.portfolio.registry' "$_cfg")")" 2>/dev/null && pwd)/custom-skills
+       _names=$(ls "$_cs" 2>/dev/null | grep -v '^README' | paste -sd'|' -)
+       if [ -z "$_names" ]; then
+         echo "CANNOT VERIFY — private custom-skills dir not reachable at $_cs"
+       elif git -C "$_root" grep -qE "$_names"; then echo VIOLATED
+       else echo ok; fi
+     fi
      ```
+
+     **`CANNOT VERIFY` is not a pass.** An earlier version printed `SKIP` on
+     both of those branches, which reads like a clean result — so the check
+     failed open precisely when it mattered: in a worktree, and on a fresh
+     clone or in CI where `project-config.json` is absent. A leak check that
+     cannot run in a fresh clone cannot verify the state you actually publish.
+     (`git grep` is tracked-only already, so no `-- $(git ls-files)` splice —
+     that form also breaks on paths with spaces.)
 
 5. **`bin/link-rex-data.sh` exists and is fork-owned.** Symlinks the private
    repo's Rex learned data into `.claude/` and maintains the exclude list. Not an
@@ -194,13 +213,22 @@ These shipped in the previous fork (v4.3.0) and are **not yet re-grafted** onto
 v5.4.0. Until each lands, the behaviour it provided is simply absent — do not
 assume the framework is enforcing it.
 
-8. **Azure DevOps mechanical enforcement.** `_lib-extract-pr.sh` recognises the
-   AzDO and MCP merge shapes and `_lib-resolve-ticket.sh` resolves AzDO Boards
-   work items (both landed), **but no gate hook consumes them yet and
-   `settings.json` carries no `az repos` matchers.** An AzDO PR completion
-   therefore passes no gate at all. See AgDR-0123 for why upstream's `custom`
-   tracker kind cannot replace the forked resolver.
+8. **Azure DevOps mechanical enforcement — NOTHING of this is on `main`.**
+   Be precise about the state, because the failure mode here is a re-grafter
+   assuming a foundation exists and building on air:
+   - `_lib-extract-pr.sh` on `main` is **upstream-stock, with zero AzDO
+     awareness**.
+   - `_lib-resolve-ticket.sh` **does not exist in the tree**.
+   - `settings.json` carries **no** `az repos` matchers.
+   - `git grep -ilE 'az repos|azuredevops|az boards' -- .claude/` returns nothing.
+
+   A detection layer plus the forked resolver are written and reviewed on the
+   unmerged `chore/GH-1-azdo-merge-shape-ticket-resolution` branch, along with
+   AgDR-0123 (why upstream's `custom` tracker kind cannot replace the resolver).
+   Until that branch merges **an Azure DevOps PR completion passes no gate at
+   all** — treat the whole capability as absent.
    - Signature: `grep -q 'az repos pr update' .claude/settings.json && echo ok || echo PENDING`
+   - Foundation check: `[ -f .claude/hooks/_lib-resolve-ticket.sh ] && grep -qi 'azuredevops' .claude/hooks/_lib-extract-pr.sh && echo "foundation present" || echo "foundation ABSENT"`
 
 9. **Rex writes markdown reviews; the merge gate needs the CEO marker only**
    ([AgDR-0125](agdr/AgDR-0125-rex-md-reviews-and-manual-merge.md)), plus the
