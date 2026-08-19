@@ -68,12 +68,38 @@ run block-unreviewed-merge "$AZUP --status completed" "$(payload_bash "$AZUP --i
 run block-unreviewed-merge "MCP status=completed"     "$(payload_mcp completed)"                              BLOCKED
 non_merges block-unreviewed-merge
 
-echo "== design / architecture: exit 0 when the diff is unresolvable (ticket #8) =="
+echo "== design / architecture: permanently inert for AzDO, and they say so =="
+# These two read the diff via the GitHub CLI, which cannot see an Azure DevOps
+# PR — so for AzDO they are inert unconditionally, not conditionally the way
+# ticket #8 describes for an unresolvable gh PR.
+#
+# ASSERT THE NOTE, NOT THE EXIT CODE. An earlier version of this block asserted
+# `allowed` for every payload, which no change could ever fail: Rex stripped
+# AzDO support out of both gates and the suite still reported 29/29. Exit 0 is
+# what these gates do for almost any input; it carries no information. The note
+# is the only observable that distinguishes "ran and declined" from "never fired".
 for hook in require-design-review-for-ui require-architecture-review; do
   echo "  -- $hook"
-  run "$hook" "$GH $PRW $MG (control)"      "$(payload_bash "$GH $PRW $MG 999 --repo o/r --squash")" allowed
-  run "$hook" "$AZUP --status completed"    "$(payload_bash "$AZUP --id 999 --status completed")"   allowed
-  run "$hook" "MCP status=completed"        "$(payload_mcp completed)"                              allowed
+  for shape in bash mcp; do
+    case "$shape" in
+      bash) pl="$(payload_bash "$AZUP --id 999 --status completed")" ;;
+      mcp)  pl="$(payload_mcp completed)" ;;
+    esac
+    note=$(printf '%s\n' "$pl" | bash "$HOOK_DIR/$hook.sh" 2>&1 >/dev/null)
+    if printf '%s' "$note" | grep -q 'does not apply to Azure DevOps'; then
+      printf '    %-44s %-8s ✓\n' "$shape shape: announces non-application" "note"; pass=$((pass+1))
+    else
+      printf '    %-44s %-8s ✗ got: %s\n' "$shape shape: announces non-application" "silent" "${note:-<nothing>}"; fail=$((fail+1))
+    fi
+  done
+  # A gh merge must NOT produce the AzDO note — proves the branch is stack-gated
+  # rather than firing on everything.
+  ghnote=$(printf '%s\n' "$(payload_bash "$GH $PRW $MG 999 --repo o/r --squash")" | bash "$HOOK_DIR/$hook.sh" 2>&1 >/dev/null)
+  if printf '%s' "$ghnote" | grep -q 'does not apply to Azure DevOps'; then
+    printf '    %-44s %-8s ✗\n' "gh merge does NOT get the AzDO note" "leaked"; fail=$((fail+1))
+  else
+    printf '    %-44s %-8s ✓\n' "gh merge does NOT get the AzDO note" "clean"; pass=$((pass+1))
+  fi
   non_merges "$hook"
 done
 

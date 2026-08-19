@@ -127,6 +127,20 @@ fi
 if ! is_merge_invocation "$INPUT"; then
   exit 0
 fi
+# --- Azure DevOps: this gate cannot apply (fork divergence) --------------
+# This gate decides from `gh pr diff`, which cannot read an Azure DevOps PR, so
+# for an AzDO merge it is permanently inert — not conditionally, the way ticket
+# #8 describes for an unresolvable gh PR. Say so.
+#
+# Without this it exits 0 silently, and a gate that is silently inert is
+# indistinguishable from one that ran and passed. That ambiguity is the thing
+# this whole area has been getting wrong, and it applies here as much as it does
+# to block-merge-on-red-ci.
+if [ "$(merge_stack_from_invocation "$INPUT")" = "azuredevops" ]; then
+  _AZ_PR=$(extract_pr_number_from_invocation "$INPUT")
+  echo "NOTE: require-architecture-review does not apply to Azure DevOps PR #${_AZ_PR:-?} — it reads the diff via the GitHub CLI, which cannot see an AzDO pull request. Review coverage for AzDO PRs is not enforced by this hook." >&2
+  exit 0
+fi
 
 # Resolve the PR's repo. Each step runs only if the prior left CMD_REPO empty:
 #   1. --repo flag      (`gh pr merge --repo owner/repo`)

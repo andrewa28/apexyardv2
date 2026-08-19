@@ -950,14 +950,20 @@ extract_repo_from_command() {
 is_az_merge_command() {
   local cmd="$1"
   echo "$cmd" | grep -qE '\baz\s+repos\s+pr\s+update\b' || return 1
-  echo "$cmd" | grep -qE -- '--status[[:space:]]+completed\b' || return 1
+  # `[[:space:]=]` and `-i`: az accepts `--status=completed` identically to the
+  # space form, and the value is not case-sensitive. Requiring a space missed
+  # BOTH `--id=42 --status=completed` and `--id 42 --status=completed`, so the
+  # gate never fired on either — while the sibling parser in this same file
+  # already handled `--repo=`. That inconsistency was the whole bug.
+  echo "$cmd" | grep -qiE -- '--status[[:space:]=]+completed\b' || return 1
   return 0
 }
 
 # Echoes the PR number from an `az repos pr update --id <n>` command, or empty.
 extract_az_pr_number() {
   local cmd="$1"
-  echo "$cmd" | grep -oE -- '--id[[:space:]]+[0-9]+' | grep -oE '[0-9]+' | head -1
+  # Same equals-form tolerance as the detector above; `--id=42` is valid az.
+  echo "$cmd" | grep -oE -- '--id[[:space:]=]+[0-9]+' | grep -oE '[0-9]+' | head -1
 }
 
 # Internal: echo the effective tool name for an invocation.
@@ -983,7 +989,8 @@ merge_stack_from_invocation() {
   case "$tool_name" in
     mcp__azure-devops__repo_update_pull_request)
       local status
-      status=$(echo "$input" | jq -r '.tool_input.status // empty' 2>/dev/null)
+      status=$(echo "$input" | jq -r '.tool_input.status // empty' 2>/dev/null \
+        | tr '[:upper:]' '[:lower:]')
       if [ "$status" = "completed" ]; then
         echo "azuredevops"
         return
@@ -1022,7 +1029,7 @@ extract_pr_number_from_invocation() {
       # also yields empty. Without this, a caller that forgot to check
       # is_merge_invocation first would see a plausible PR number for an
       # invocation that is not a merge at all.
-      if [ "$(echo "$input" | jq -r '.tool_input.status // empty' 2>/dev/null)" = "completed" ]; then
+      if [ "$(echo "$input" | jq -r '.tool_input.status // empty' 2>/dev/null | tr '[:upper:]' '[:lower:]')" = "completed" ]; then
         echo "$input" | jq -r '.tool_input.pullRequestId // empty' 2>/dev/null
       fi
       return
