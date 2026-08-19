@@ -78,7 +78,17 @@ if command -v jq >/dev/null 2>&1; then
   COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 fi
 
-if [ -z "$COMMAND" ]; then
+# --- Azure DevOps MCP merge shape (fork divergence) ---------------------
+# `mcp__azure-devops__repo_update_pull_request` with status=completed IS a
+# merge and carries NO command string, so the empty-COMMAND branch below would
+# exit 0 and this gate would never fire on it. Detect it before that branch.
+# Narrow by design: only a genuine AzDO merge invocation continues.
+_AZDO_MCP_MERGE=0
+if [ -z "$COMMAND" ] && [ "$(merge_stack_from_invocation "$INPUT")" = "azuredevops" ]; then
+  _AZDO_MCP_MERGE=1
+fi
+
+if [ -z "$COMMAND" ] && [ "$_AZDO_MCP_MERGE" -eq 0 ]; then
   # jq is missing, OR jq is present but the parse produced nothing — a
   # genuinely empty command (legitimate no-op) or jq choking on
   # malformed/unexpected JSON. Those two cases are indistinguishable from
@@ -110,7 +120,25 @@ if [ -z "$COMMAND" ]; then
   exit 0
 fi
 
-if ! is_merge_command "$COMMAND"; then
+# Whole-input gate (fork divergence): the gh / glab / wrapper shapes exactly as
+# is_merge_command handled them, plus `az repos pr update --status completed`
+# and the AzDO MCP shape. is_merge_invocation delegates to is_merge_command for
+# everything upstream already covered, so no existing shape changes behaviour.
+if ! is_merge_invocation "$INPUT"; then
+  exit 0
+fi
+# --- Azure DevOps: this gate cannot apply (fork divergence) --------------
+# This gate decides from `gh pr diff`, which cannot read an Azure DevOps PR, so
+# for an AzDO merge it is permanently inert — not conditionally, the way ticket
+# #8 describes for an unresolvable gh PR. Say so.
+#
+# Without this it exits 0 silently, and a gate that is silently inert is
+# indistinguishable from one that ran and passed. That ambiguity is the thing
+# this whole area has been getting wrong, and it applies here as much as it does
+# to block-merge-on-red-ci.
+if [ "$(merge_stack_from_invocation "$INPUT")" = "azuredevops" ]; then
+  _AZ_PR=$(extract_pr_number_from_invocation "$INPUT")
+  echo "NOTE: require-architecture-review does not apply to Azure DevOps PR #${_AZ_PR:-?} — it reads the diff via the GitHub CLI, which cannot see an AzDO pull request. Review coverage for AzDO PRs is not enforced by this hook." >&2
   exit 0
 fi
 
@@ -140,7 +168,10 @@ if [ -z "$CMD_REPO" ]; then
   fi
 fi
 
-PR_NUMBER=$(extract_pr_number "$COMMAND")
+# Invocation-aware (fork divergence): identical to extract_pr_number for every
+# command shape, and additionally reads .tool_input.pullRequestId for the AzDO
+# MCP shape, which has no command text to parse.
+PR_NUMBER=$(extract_pr_number_from_invocation "$INPUT")
 # Resolve the repo for qualified marker paths (#485).
 # CMD_REPO already resolved above; fall back via helper if still blank.
 # NOTE (#765): the architecture marker is keyed on the BASE repo. CMD_REPO is the base via
@@ -283,7 +314,9 @@ fi
 # to the local HEAD (#1091) — a local value is agent-controlled, so falling
 # back would silently void the check.
 APPROVED_SHA=$(tr -d '[:space:]' < "$APPROVAL")
-CURRENT_SHA=$(resolve_pr_head "$PR_NUMBER" "$CMD_REPO")
+# Stack-aware HEAD resolution (fork divergence): gh/glab unchanged; Azure DevOps
+# resolves lastMergeSourceCommit.commitId via `az repos pr show`.
+CURRENT_SHA=$(resolve_pr_head_from_invocation "$INPUT" "$PR_NUMBER" "$CMD_REPO")
 if [ -z "$CURRENT_SHA" ]; then
   cat >&2 <<MSG
 BLOCKED: could not resolve PR #${PR_NUMBER}'s HEAD from the forge.

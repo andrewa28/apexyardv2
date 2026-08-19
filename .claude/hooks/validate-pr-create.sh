@@ -299,10 +299,16 @@ if [ -n "$TICKET_REF" ]; then
   # when the operator is inside workspace/<project>/ — the project clone's git
   # root is NOT where the framework config lives. Resolved up front so the kind
   # lookup below can key off the target repo for a per-project override (#670).
+  # FORK DIVERGENCE — `.tracker_repo` is scoped to the ops fork's OWN PRs.
+  # Same reasoning as verify-commit-refs.sh: this portfolio is tracker-
+  # heterogeneous (framework work on GitHub, managed projects on Azure DevOps),
+  # so the ops fork's tracker must not be applied to a managed project's PR.
+  # An explicit --repo on the command still wins, as upstream intends.
   TRACKER_REPO=""
   if [ -n "$CMD_REPO" ]; then
     TRACKER_REPO="$CMD_REPO"
-  elif [ -n "$CONFIG_ROOT" ] && [ -f "${CONFIG_ROOT}/.claude/project-config.json" ]; then
+  elif [ -n "$CONFIG_ROOT" ] && [ -f "${CONFIG_ROOT}/.claude/project-config.json" ] && \
+       [ -n "$REPO_ROOT" ] && [ "$REPO_ROOT" = "$CONFIG_ROOT" ]; then
     TRACKER_REPO=$(jq -r '.tracker_repo // empty' "${CONFIG_ROOT}/.claude/project-config.json" 2>/dev/null)
   fi
   if [ -z "$TRACKER_REPO" ]; then
@@ -396,6 +402,49 @@ if [ -n "$TICKET_REF" ]; then
         UPSTREAM_REPO=""
       fi
     fi
+  fi
+
+  # --- Azure DevOps dispatch (fork divergence, AgDR-0123) ----------------
+  # When `.tracker.azuredevops` / `.tracker_azuredevops` is configured, resolve
+  # #N as a Boards work item rather than a tracker-lib ticket. Runs BEFORE the
+  # tracker-lib path and consumes the ticket (TICKET_NUM="") when it applies.
+  #
+  # Why not upstream's `custom` tracker kind: it cannot distinguish "work item
+  # does not exist" from "az is unavailable", and the non-gh path degrades to
+  # shape-only (#501). Both collapse to "accepted", so a fabricated number
+  # passes. See AgDR-0123.
+  if [ -n "$TICKET_NUM" ] && [ -f "$_VPC_HOOK_DIR/_lib-resolve-ticket.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$_VPC_HOOK_DIR/_lib-resolve-ticket.sh"
+    _AZDO_SPEC=$(resolve_tracker_spec 2>/dev/null)
+    case "$_AZDO_SPEC" in
+      azuredevops:*)
+        case "$(ticket_state "$TICKET_NUM" "$_AZDO_SPEC")" in
+          missing)
+            {
+              echo "BLOCKED: PR title references ${TICKET_REF}, but work item #${TICKET_NUM} does not exist in ${_AZDO_SPEC}."
+              echo
+              echo "This is the fabricated-reference case the ticket-vocabulary rule exists to catch."
+              echo "If the work has no ticket yet, create one and use the number it returns."
+            } >&2
+            exit 2
+            ;;
+          closed)
+            {
+              echo "BLOCKED: PR title references ${TICKET_REF}, but work item #${TICKET_NUM} in ${_AZDO_SPEC} is closed."
+              echo "Reference an open work item, or reopen that one."
+            } >&2
+            exit 2
+            ;;
+          unknown)
+            echo "WARN: validate-pr-create.sh: cannot reach Azure DevOps — ${TICKET_REF} accepted on shape only, no existence check against ${_AZDO_SPEC}. Install/authenticate the az CLI to restore it." >&2
+            ;;
+        esac
+        # Handled here (verified, or explicitly warned) — do not also run the
+        # tracker-lib path, which would look this number up in the wrong system.
+        TICKET_NUM=""
+        ;;
+    esac
   fi
 
   if [ -n "$TICKET_NUM" ] && { [ "$TRACKER_KIND" != "gh" ] || [ -n "$TRACKER_REPO" ]; }; then

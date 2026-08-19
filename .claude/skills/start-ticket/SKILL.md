@@ -1,8 +1,8 @@
 ---
 name: start-ticket
-description: Declare an active ticket so the ticket-first hook lets code edits through. Accepts `<N>` or `<owner>/<repo>#<N>`.
+description: Declare an active ticket so the ticket-first hook lets code edits through. Accepts `<N>`, `<owner>/<repo>#<N>`, or an Azure DevOps work-item URL.
 disable-model-invocation: false
-argument-hint: "<issue-number> | <owner/repo>#<number>"
+argument-hint: "<issue-number> | <owner/repo>#<number> | <azdo-work-item-url>"
 effort: low
 ---
 
@@ -38,19 +38,58 @@ Defaults match today's single-fork layout (`./apexyard.projects.yaml`, `./projec
 
 ### 1. Parse Arguments
 
-Expected forms:
+Expected forms (first match wins):
 
-- `42` — plain number, resolves against the current repo. Read `git remote get-url origin` and extract `<owner>/<repo>`. If there's no origin, stop and ask for a fully-qualified reference.
+- **Azure DevOps work-item URL** (fork divergence) — `https://dev.azure.com/<org>/<project>/_workitems/edit/<n>`, optional trailing slash. Regex: `^https://dev\.azure\.com/([^/]+)/([^/]+)/_workitems/edit/([0-9]+)/?$`. Yields `org=$1`, `project=$2`, `num=$3`, `tracker_spec=azuredevops:<org>/<project>`. Only the canonical `dev.azure.com` host is recognised — legacy `*.visualstudio.com` URLs are not.
+- `42` — plain number, resolves against the current repo via `git remote get-url origin`. If there's no origin, stop and ask for a fully-qualified reference. **Azure DevOps has no shorthand** — pass the full URL, because a bare number cannot say which Boards project it belongs to.
 - `me2resh/flat-mate#128` — fully-qualified reference.
 - `apexyard#42` — owner defaults to the current org (parsed from the origin URL).
 
 If `$ARGUMENTS` is empty, stop and ask the user which issue they're starting.
 
+**Why the AzDO project is not the git repo.** A work-item URL exposes
+`<org>/<project>`, but the registry's `repo:` field holds `<org>/<git-repo>`,
+and for a typical organisation those differ (a `Platform` Boards project can
+hold a `Platform.Auth` repo). Matching a work-item URL against `repo:` would
+therefore miss — which is why the spec carries its own `azuredevops:` prefix
+rather than being inferred. See AgDR-0124.
+
 **Cross-repo note:** ApexYard governs a portfolio of repos. If the user is in the ops repo (the apexyard fork) but the ticket lives in a managed project's own repo, they should pass the fully-qualified form so the marker records the correct tracker. Each managed project's tickets live in that project's own GitHub repo — tickets do not cross project boundaries.
 
 ### 2. Verify the Issue Exists
 
-Source the tracker library and call `tracker_view`. The library dispatches the right CLI based on `.tracker.kind` in `.claude/project-config.{defaults,}.json` — `gh` (default), `linear`, `jira`, `asana`, `custom`, or `none`. See `.claude/hooks/_lib-tracker.sh` and AgDR-0033.
+**Azure DevOps first (fork divergence).** If step 1 produced an
+`azuredevops:<org>/<project>` spec, verify through `_lib-resolve-ticket.sh`
+rather than the tracker library, and skip the rest of this step:
+
+```bash
+source "$(git rev-parse --show-toplevel)/.claude/hooks/_lib-resolve-ticket.sh"
+state=$(ticket_state "$num" "$tracker_spec")   # open | closed | missing | unknown
+title=$(ticket_title "$num" "$tracker_spec")   # empty on lookup failure
+url="https://dev.azure.com/$org/$project/_workitems/edit/$num"
+```
+
+| `state` | Action |
+|---------|--------|
+| `open` | Proceed to step 3. |
+| `closed` | Warn and confirm before continuing — resuming a reopened item is legitimate. |
+| `missing` | **Stop. Do not write the marker.** This is the fabricated-`#N` case `ticket-vocabulary.md` targets. |
+| `unknown` | The `az` CLI is absent or unauthenticated. Warn, and proceed only if the user confirms — an unverified ticket is not a verified one, but a developer without the CLI should not be hard-blocked. |
+
+If `ticket_title` is empty while `state` is `open`/`closed`, use `<no title>`.
+
+Do **not** reach for the Azure DevOps MCP tools here: bash blocks cannot call
+MCP. If a title has already been resolved via MCP earlier in the turn, pass it
+in through `$title`; the shell helper stays bash-only.
+
+Why not upstream's `custom` tracker kind for this: it cannot distinguish "work
+item does not exist" from "az is unavailable", so both collapse to accepted and
+a fabricated number passes. AgDR-0123 records the decision.
+
+**Every other tracker** goes through the library, unchanged. Source it and call
+`tracker_view`; it dispatches on `.tracker.kind` in
+`.claude/project-config.{defaults,}.json` — `gh` (default), `linear`, `jira`,
+`asana`, `custom`, or `none`. See `.claude/hooks/_lib-tracker.sh` and AgDR-0033.
 
 ```bash
 source "$(git rev-parse --show-toplevel)/.claude/hooks/_lib-read-config.sh"
@@ -189,7 +228,7 @@ directory can be created.
 Write these key=value lines to the path resolved in step 4c:
 
 ```
-repo=<owner/repo>
+repo=<tracker_spec>          # <owner>/<repo> for GitHub; azuredevops:<org>/<project> for AzDO
 number=<number>
 title=<title>
 url=<url>
